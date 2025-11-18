@@ -34,8 +34,7 @@ const STATIC_ORIGINS =
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     // anciens / nouveaux déploiements Vercel déjà connus
-    "https://bmvt-app-gestion-rgytqshwv-valybamba56-gmailcoms-projects.vercel.app",
-    "https://bmvt-app-gestion-aiok39yvm-valybamba56-gmailcoms-projects.vercel.app",
+    "https://bmvt-app-gestion-e36z8zg25-valybamba56-gmailcoms-projects.vercel.app",
   ];
 
 // Options CORS avec fonction dynamique
