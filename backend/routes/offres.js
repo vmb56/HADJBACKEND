@@ -2,58 +2,45 @@
 const express = require("express");
 const router = express.Router();
 
-// Instance sequelize (comme dans routes/vols.js)
-const { sequelize } = require("../db");
-
-/* =============== Helpers (alignés sur vols.js) =============== */
-function isPg() {
-  return (sequelize.getDialect?.() || "").toLowerCase() === "postgres";
-}
-const Q = (c) => (isPg() ? `"${c}"` : c); // quote identifiants Postgres
+const { query } = require("../db"); // ⬅️ Turso / libSQL
 
 function logError(where, e) {
-  // eslint-disable-next-line no-console
   console.error(`[offres] ${where}:`, e && (e.stack || e.message || e));
-  if (e?.parent?.sql) console.error("[SQL]", e.parent.sql);
-  if (e?.parent?.parameters) console.error("[Params]", e.parent.parameters);
 }
 
-// Colonnes sélectionnées avec alias camelCase stables pour le front
-// NOTE: on lit en base snake_case (date_depart, date_arrivee, created_at, updated_at)
-const offreCols = [
-  `${Q("id")} AS "id"`,
-  `${Q("nom")} AS "nom"`,
-  `${Q("prix")} AS "prix"`,
-  `${Q("hotel")} AS "hotel"`,
-  `${Q("date_depart")} AS "dateDepart"`,
-  `${Q("date_arrivee")} AS "dateArrivee"`,
-  `${Q("created_at")} AS "createdAt"`,
-  `${Q("updated_at")} AS "updatedAt"`,
-].join(", ");
+/* Colonnes retournées pour le front, avec alias camelCase */
+const OFFRE_COLS = `
+  id        AS id,
+  nom       AS nom,
+  prix      AS prix,
+  hotel     AS hotel,
+  date_depart  AS dateDepart,
+  date_arrivee AS dateArrivee,
+  created_at   AS createdAt,
+  updated_at   AS updatedAt
+`;
 
 /* ===================== GET /api/offres ===================== */
 router.get("/", async (req, res) => {
   try {
     const searchRaw = String(req.query.search || "").trim();
-    let sql = `SELECT ${offreCols} FROM ${Q("offres")}`;
+    let sql = `SELECT ${OFFRE_COLS} FROM offres`;
     const where = [];
-    const params = {};
+    const params = [];
 
     if (searchRaw) {
-      if (isPg()) {
-        where.push(`(${Q("nom")} ILIKE :q OR ${Q("hotel")} ILIKE :q)`);
-        params.q = `%${searchRaw}%`;
-      } else {
-        where.push(`(${Q("nom")} LIKE :q OR ${Q("hotel")} LIKE :q)`);
-        params.q = `%${searchRaw}%`;
-      }
+      where.push("(nom LIKE ? OR hotel LIKE ?)");
+      const p = `%${searchRaw}%`;
+      params.push(p, p);
     }
 
-    if (where.length) sql += ` WHERE ${where.join(" AND ")}`;
-    sql += ` ORDER BY ${Q("created_at")} DESC, ${Q("id")} DESC`;
+    if (where.length) {
+      sql += ` WHERE ${where.join(" AND ")}`;
+    }
+    sql += ` ORDER BY created_at DESC, id DESC`;
 
-    const [rows] = await sequelize.query(sql, { replacements: params });
-    res.json({ items: rows || [] });
+    const result = await query(sql, params);
+    res.json({ items: result.rows || [] });
   } catch (e) {
     logError("GET /", e);
     res.status(500).json({ message: "Erreur serveur", detail: e.message });
@@ -76,34 +63,23 @@ router.post("/", async (req, res) => {
       date_arrivee,  // 'YYYY-MM-DD'
     };
 
-    let insertedId;
-    if (isPg()) {
-      const [rows] = await sequelize.query(
-        `INSERT INTO ${Q("offres")} (${Q("nom")}, ${Q("prix")}, ${Q("hotel")}, ${Q("date_depart")}, ${Q("date_arrivee")}, ${Q("created_at")}, ${Q("updated_at")})
-         VALUES (:nom, :prix, :hotel, :date_depart, :date_arrivee, NOW(), NOW())
-         RETURNING ${Q("id")} AS "id"`,
-        { replacements: payload }
-      );
-      insertedId = rows?.[0]?.id;
-    } else {
-      const [result] = await sequelize.query(
-        `INSERT INTO ${Q("offres")} (${Q("nom")}, ${Q("prix")}, ${Q("hotel")}, ${Q("date_depart")}, ${Q("date_arrivee")}, ${Q("created_at")}, ${Q("updated_at")})
-         VALUES (:nom, :prix, :hotel, :date_depart, :date_arrivee, NOW(), NOW())`,
-        { replacements: payload }
-      );
-      insertedId = result?.insertId;
-      if (!insertedId) {
-        const [r] = await sequelize.query(`SELECT LAST_INSERT_ID() AS id`);
-        insertedId = r?.[0]?.id;
-      }
-    }
-
-    const [rowsSel] = await sequelize.query(
-      `SELECT ${offreCols} FROM ${Q("offres")} WHERE ${Q("id")} = :id`,
-      { replacements: { id: insertedId } }
+    const insertRes = await query(
+      `
+      INSERT INTO offres (nom, prix, hotel, date_depart, date_arrivee, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING ${OFFRE_COLS}
+      `,
+      [
+        payload.nom,
+        payload.prix,
+        payload.hotel,
+        payload.date_depart,
+        payload.date_arrivee,
+      ]
     );
 
-    res.status(201).json(rowsSel?.[0] || null);
+    const row = insertRes.rows?.[0] || null;
+    res.status(201).json(row);
   } catch (e) {
     logError("POST /", e);
     res.status(500).json({ message: "Erreur serveur", detail: e.message });
@@ -122,41 +98,47 @@ router.put("/:id", async (req, res) => {
     }
 
     // Vérifier l'existence
-    const [exists] = await sequelize.query(
-      `SELECT ${Q("id")} AS "id" FROM ${Q("offres")} WHERE ${Q("id")} = :id`,
-      { replacements: { id } }
+    const existsRes = await query(
+      "SELECT id FROM offres WHERE id = ? LIMIT 1",
+      [id]
     );
-    if (!exists?.[0]) return res.status(404).json({ message: "Offre introuvable" });
+    if (!existsRes.rows?.[0]) {
+      return res.status(404).json({ message: "Offre introuvable" });
+    }
 
-    const replacements = {
-      id,
-      nom: String(nom).trim(),
-      prix: Number(prix),
-      hotel: String(hotel).trim(),
-      date_depart,
-      date_arrivee,
-    };
-
-    const updateSql = `
-      UPDATE ${Q("offres")}
+    await query(
+      `
+      UPDATE offres
       SET
-        ${Q("nom")}=:nom,
-        ${Q("prix")}=:prix,
-        ${Q("hotel")}=:hotel,
-        ${Q("date_depart")}=:date_depart,
-        ${Q("date_arrivee")}=:date_arrivee,
-        ${Q("updated_at")}=NOW()
-      WHERE ${Q("id")}=:id
-    `;
-    await sequelize.query(updateSql, { replacements });
-
-    const [rowsSel] = await sequelize.query(
-      `SELECT ${offreCols} FROM ${Q("offres")} WHERE ${Q("id")} = :id`,
-      { replacements: { id } }
+        nom = ?,
+        prix = ?,
+        hotel = ?,
+        date_depart = ?,
+        date_arrivee = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+      `,
+      [
+        String(nom).trim(),
+        Number(prix),
+        String(hotel).trim(),
+        date_depart,
+        date_arrivee,
+        id,
+      ]
     );
 
-    const updated = rowsSel?.[0];
-    if (!updated) return res.status(404).json({ message: "Offre introuvable après MAJ" });
+    const updatedRes = await query(
+      `SELECT ${OFFRE_COLS} FROM offres WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    const updated = updatedRes.rows?.[0];
+
+    if (!updated) {
+      return res
+        .status(404)
+        .json({ message: "Offre introuvable après MAJ" });
+    }
 
     res.json(updated);
   } catch (e) {
@@ -171,10 +153,7 @@ router.delete("/:id", async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "ID invalide" });
 
-    await sequelize.query(
-      `DELETE FROM ${Q("offres")} WHERE ${Q("id")} = :id`,
-      { replacements: { id } }
-    );
+    await query("DELETE FROM offres WHERE id = ?", [id]);
     res.json({ ok: true });
   } catch (e) {
     logError("DELETE /:id", e);

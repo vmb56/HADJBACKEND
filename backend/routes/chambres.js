@@ -1,18 +1,12 @@
 // backend/routes/chambres.js
 const express = require("express");
 const router = express.Router();
-const { sequelize } = require("../db");
+const { query } = require("../db"); // ⬅️ Turso / libSQL
 
 /* ================= Helpers ================= */
-function isPg() {
-  return (sequelize.getDialect?.() || "").toLowerCase() === "postgres";
-}
-const Q = (c) => (isPg() ? `"${c}"` : c);
 
 function logError(where, e) {
   console.error(`[chambres] ${where}:`, e && (e.stack || e.message || e));
-  if (e?.parent?.sql) console.error("[SQL]", e.parent.sql);
-  if (e?.parent?.parameters) console.error("[Params]", e.parent.parameters);
 }
 
 function normalizeRoomPayload(b = {}) {
@@ -25,41 +19,50 @@ function normalizeRoomPayload(b = {}) {
 }
 
 /* ================= Colonnes ================= */
-const roomCols = [
-  "id", "hotel", "city", "type", "capacity", "createdAt", "updatedAt",
-].map(k => `${Q(k)} AS "${k}"`).join(", ");
 
-const occCols = [
-  "id", "name", "passport", "photoUrl", "roomId", "createdAt", "updatedAt",
-].map(k => `${Q(k)} AS "${k}"`).join(", ");
+const roomCols =
+  'id, hotel, city, type, capacity, createdAt, updatedAt';
+
+const occCols =
+  'id, name, passport, photoUrl, roomId, createdAt, updatedAt';
 
 /* =========== GET /api/chambres =========== */
 router.get("/", async (_req, res) => {
   try {
-    const [rooms] = await sequelize.query(
-      `SELECT ${roomCols} FROM ${Q("rooms")} ORDER BY ${Q("createdAt")} DESC`
+    const roomsResult = await query(
+      `SELECT ${roomCols} FROM rooms ORDER BY createdAt DESC`
     );
+    const rooms = roomsResult.rows || [];
+
     if (!rooms.length) return res.json({ items: [] });
 
-    const ids = rooms.map(r => r.id);
+    const ids = rooms.map((r) => r.id);
     const placeholders = ids.map(() => "?").join(",");
 
-    const [occs] = await sequelize.query(
+    const occsResult = await query(
       `SELECT ${occCols}
-       FROM ${Q("room_occupants")}
-       WHERE ${Q("roomId")} IN (${placeholders})
-       ORDER BY ${Q("id")} ASC`,
-      { replacements: ids }
+       FROM room_occupants
+       WHERE roomId IN (${placeholders})
+       ORDER BY id ASC`,
+      ids
     );
+    const occs = occsResult.rows || [];
 
     const grouped = new Map();
-    rooms.forEach(r => grouped.set(r.id, []));
-    occs.forEach(o => {
+    rooms.forEach((r) => grouped.set(r.id, []));
+    occs.forEach((o) => {
       const arr = grouped.get(o.roomId);
-      if (arr) arr.push({ id: o.id, name: o.name, passport: o.passport, photoUrl: o.photoUrl });
+      if (arr) {
+        arr.push({
+          id: o.id,
+          name: o.name,
+          passport: o.passport,
+          photoUrl: o.photoUrl,
+        });
+      }
     });
 
-    const items = rooms.map(r => ({
+    const items = rooms.map((r) => ({
       id: r.id,
       hotel: r.hotel,
       city: r.city,
@@ -82,35 +85,24 @@ router.post("/", async (req, res) => {
   try {
     const p = normalizeRoomPayload(req.body);
     if (!p.hotel || !p.city) {
-      return res.status(400).json({ message: "Champs requis manquants (hotel, city)." });
+      return res
+        .status(400)
+        .json({ message: "Champs requis manquants (hotel, city)." });
     }
 
-    let insertedId;
-    if (isPg()) {
-      const [rows] = await sequelize.query(
-        `INSERT INTO ${Q("rooms")} (${Q("hotel")}, ${Q("city")}, ${Q("type")}, ${Q("capacity")}, ${Q("createdAt")}, ${Q("updatedAt")})
-         VALUES (:hotel, :city, :type, :capacity, NOW(), NOW())
-         RETURNING ${Q("id")} AS "id"`,
-        { replacements: p }
-      );
-      insertedId = rows[0].id;
-    } else {
-      const [r] = await sequelize.query(
-        `INSERT INTO ${Q("rooms")} (${Q("hotel")}, ${Q("city")}, ${Q("type")}, ${Q("capacity")}, ${Q("createdAt")}, ${Q("updatedAt")})
-         VALUES (:hotel, :city, :type, :capacity, NOW(), NOW())`,
-        { replacements: p }
-      );
-      insertedId = r?.insertId;
-      if (!insertedId) {
-        const [rid] = await sequelize.query(`SELECT LAST_INSERT_ID() AS id`);
-        insertedId = rid?.[0]?.id;
-      }
-    }
-
-    const [[room]] = await sequelize.query(
-      `SELECT ${roomCols} FROM ${Q("rooms")} WHERE ${Q("id")} = :id`,
-      { replacements: { id: insertedId } }
+    const insertResult = await query(
+      `
+      INSERT INTO rooms (hotel, city, type, capacity, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING ${roomCols}
+      `,
+      [p.hotel, p.city, p.type, p.capacity]
     );
+
+    const room = insertResult.rows?.[0];
+    if (!room) {
+      throw new Error("Insertion chambre échouée");
+    }
 
     res.status(201).json({
       id: room.id,
@@ -132,35 +124,51 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const p = normalizeRoomPayload(req.body);
-    if (!p.hotel || !p.city) {
-      return res.status(400).json({ message: "Champs requis manquants (hotel, city)." });
+    if (!id || Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalide" });
     }
 
-    const [exists] = await sequelize.query(
-      `SELECT ${Q("id")} AS "id" FROM ${Q("rooms")} WHERE ${Q("id")}=:id`,
-      { replacements: { id } }
-    );
-    if (!exists.length) return res.status(404).json({ message: "Chambre introuvable" });
+    const p = normalizeRoomPayload(req.body);
+    if (!p.hotel || !p.city) {
+      return res
+        .status(400)
+        .json({ message: "Champs requis manquants (hotel, city)." });
+    }
 
-    await sequelize.query(
-      `UPDATE ${Q("rooms")}
-       SET ${Q("hotel")}=:hotel, ${Q("city")}=:city, ${Q("type")}=:type, ${Q("capacity")}=:capacity, ${Q("updatedAt")}=NOW()
-       WHERE ${Q("id")}=:id`,
-      { replacements: { id, ...p } }
+    const existsRes = await query(
+      `SELECT id FROM rooms WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    if (!existsRes.rows?.length) {
+      return res.status(404).json({ message: "Chambre introuvable" });
+    }
+
+    await query(
+      `
+      UPDATE rooms
+      SET hotel = ?, city = ?, type = ?, capacity = ?, updatedAt = CURRENT_TIMESTAMP
+      WHERE id = ?
+      `,
+      [p.hotel, p.city, p.type, p.capacity, id]
     );
 
-    const [[room]] = await sequelize.query(
-      `SELECT ${roomCols} FROM ${Q("rooms")} WHERE ${Q("id")}=:id`,
-      { replacements: { id } }
+    const roomRes = await query(
+      `SELECT ${roomCols} FROM rooms WHERE id = ? LIMIT 1`,
+      [id]
     );
-    const [occs] = await sequelize.query(
-      `SELECT ${occCols}
-       FROM ${Q("room_occupants")}
-       WHERE ${Q("roomId")} = :id
-       ORDER BY ${Q("id")} ASC`,
-      { replacements: { id } }
+    const room = roomRes.rows?.[0];
+
+    const occsRes = await query(
+      `
+      SELECT ${occCols}
+      FROM room_occupants
+      WHERE roomId = ?
+      ORDER BY id ASC
+      `,
+      [id]
     );
+
+    const occs = occsRes.rows || [];
 
     res.json({
       id: room.id,
@@ -168,7 +176,12 @@ router.put("/:id", async (req, res) => {
       city: room.city,
       type: room.type,
       capacity: room.capacity,
-      occupants: occs.map(o => ({ id: o.id, name: o.name, passport: o.passport, photoUrl: o.photoUrl })),
+      occupants: occs.map((o) => ({
+        id: o.id,
+        name: o.name,
+        passport: o.passport,
+        photoUrl: o.photoUrl,
+      })),
       createdAt: room.createdAt,
       updatedAt: room.updatedAt,
     });
@@ -182,8 +195,19 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    await sequelize.query(`DELETE FROM ${Q("room_occupants")} WHERE ${Q("roomId")}=:id`, { replacements: { id } });
-    await sequelize.query(`DELETE FROM ${Q("rooms")} WHERE ${Q("id")}=:id`, { replacements: { id } });
+    if (!id || Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalide" });
+    }
+
+    await query(
+      `DELETE FROM room_occupants WHERE roomId = ?`,
+      [id]
+    );
+    await query(
+      `DELETE FROM rooms WHERE id = ?`,
+      [id]
+    );
+
     res.json({ message: "Supprimé" });
   } catch (e) {
     logError("DELETE /:id", e);
@@ -195,53 +219,41 @@ router.delete("/:id", async (req, res) => {
 router.post("/:id/occupants", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name, passport, photoUrl } = req.body || {};
-    if (!String(name || "").trim()) return res.status(400).json({ message: "Nom requis" });
-
-    const [exists] = await sequelize.query(
-      `SELECT ${Q("id")} AS "id" FROM ${Q("rooms")} WHERE ${Q("id")}=:id`,
-      { replacements: { id } }
-    );
-    if (!exists[0]) return res.status(404).json({ message: "Chambre introuvable" });
-
-    let insertedId;
-    if (isPg()) {
-      const [rows] = await sequelize.query(
-        `INSERT INTO ${Q("room_occupants")} (${Q("name")}, ${Q("passport")}, ${Q("photoUrl")}, ${Q("roomId")}, ${Q("createdAt")}, ${Q("updatedAt")})
-         VALUES (:name, :passport, :photoUrl, :roomId, NOW(), NOW())
-         RETURNING ${Q("id")} AS "id"`,
-        { replacements: {
-            name: String(name).trim(),
-            passport: String(passport || "").trim(),
-            photoUrl: String(photoUrl || "").trim(),
-            roomId: id,
-        } }
-      );
-      insertedId = rows[0].id;
-    } else {
-      const [r] = await sequelize.query(
-        `INSERT INTO ${Q("room_occupants")} (${Q("name")}, ${Q("passport")}, ${Q("photoUrl")}, ${Q("roomId")}, ${Q("createdAt")}, ${Q("updatedAt")})
-         VALUES (:name, :passport, :photoUrl, :roomId, NOW(), NOW())`,
-        { replacements: {
-            name: String(name).trim(),
-            passport: String(passport || "").trim(),
-            photoUrl: String(photoUrl || "").trim(),
-            roomId: id,
-        } }
-      );
-      insertedId = r?.insertId;
-      if (!insertedId) {
-        const [rid] = await sequelize.query(`SELECT LAST_INSERT_ID() AS id`);
-        insertedId = rid?.[0]?.id;
-      }
+    if (!id || Number.isNaN(id)) {
+      return res.status(400).json({ message: "ID invalide" });
     }
 
-    const [[occ]] = await sequelize.query(
-      `SELECT ${occCols}
-       FROM ${Q("room_occupants")}
-       WHERE ${Q("id")}=:oid`,
-      { replacements: { oid: insertedId } }
+    const { name, passport, photoUrl } = req.body || {};
+    if (!String(name || "").trim()) {
+      return res.status(400).json({ message: "Nom requis" });
+    }
+
+    const existsRes = await query(
+      `SELECT id FROM rooms WHERE id = ? LIMIT 1`,
+      [id]
     );
+    if (!existsRes.rows?.length) {
+      return res.status(404).json({ message: "Chambre introuvable" });
+    }
+
+    const insertRes = await query(
+      `
+      INSERT INTO room_occupants (name, passport, photoUrl, roomId, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING ${occCols}
+      `,
+      [
+        String(name).trim(),
+        String(passport || "").trim(),
+        String(photoUrl || "").trim(),
+        id,
+      ]
+    );
+
+    const occ = insertRes.rows?.[0];
+    if (!occ) {
+      throw new Error("Insertion occupant échouée");
+    }
 
     res.status(201).json({
       id: occ.id,
@@ -260,19 +272,28 @@ router.delete("/:id/occupants/:oid", async (req, res) => {
   try {
     const id = Number(req.params.id);
     const oid = Number(req.params.oid);
+    if (!id || !oid || Number.isNaN(id) || Number.isNaN(oid)) {
+      return res.status(400).json({ message: "ID invalide" });
+    }
 
-    const [chk] = await sequelize.query(
-      `SELECT ${Q("id")} AS "id"
-       FROM ${Q("room_occupants")}
-       WHERE ${Q("id")}=:oid AND ${Q("roomId")}=:id`,
-      { replacements: { oid, id } }
+    const chkRes = await query(
+      `
+      SELECT id
+      FROM room_occupants
+      WHERE id = ? AND roomId = ?
+      LIMIT 1
+      `,
+      [oid, id]
     );
-    if (!chk[0]) return res.status(404).json({ message: "Occupant introuvable" });
+    if (!chkRes.rows?.length) {
+      return res.status(404).json({ message: "Occupant introuvable" });
+    }
 
-    await sequelize.query(
-      `DELETE FROM ${Q("room_occupants")} WHERE ${Q("id")}=:oid`,
-      { replacements: { oid } }
+    await query(
+      `DELETE FROM room_occupants WHERE id = ?`,
+      [oid]
     );
+
     res.json({ message: "Retiré" });
   } catch (e) {
     logError("DELETE /:id/occupants/:oid", e);

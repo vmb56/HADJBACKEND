@@ -1,6 +1,6 @@
 // backend/routes/medicales.js
 const express = require("express");
-const { sequelize } = require("../db");
+const { query } = require("../db");
 
 const router = express.Router();
 router.use(express.json());
@@ -9,7 +9,10 @@ router.use(express.json());
    Helpers
 ------------------------------ */
 function normBody(b = {}) {
-  const x = (v) => (v === undefined || v === null || String(v).trim() === "" ? null : String(v).trim());
+  const x = (v) =>
+    v === undefined || v === null || String(v).trim() === ""
+      ? null
+      : String(v).trim();
   const passeport = x(b.passeport)?.toUpperCase() || null;
 
   return {
@@ -45,7 +48,10 @@ function isValidPassport(p) {
 router.get("/", async (req, res) => {
   try {
     const search = (req.query.search || "").toString().trim();
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 100, 1),
+      500
+    );
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
     let where = "";
@@ -60,41 +66,56 @@ router.get("/", async (req, res) => {
       params.push(like, like, like, `%${search}%`);
     }
 
-    const [rows] = await sequelize.query(
+    // total
+    const countRes = await query(
       `
-      SELECT SQL_CALC_FOUND_ROWS
-        id, pelerin_id, numero_cmah, passeport, nom, prenoms, pouls, carnet_vaccins, groupe_sanguin,
+      SELECT COUNT(*) AS total
+      FROM medicales
+      ${where}
+      `,
+      params
+    );
+    const total = countRes.rows?.[0]?.total || 0;
+
+    // items
+    const itemsRes = await query(
+      `
+      SELECT
+        id, pelerin_id, numero_cmah, passeport, nom, prenoms, pouls,
+        carnet_vaccins, groupe_sanguin,
         covid, poids, tension, vulnerabilite, diabete, maladie_cardiaque,
         analyse_psychiatrique, accompagnements, examen_paraclinique, antecedents,
         created_at, updated_at
       FROM medicales
       ${where}
       ORDER BY created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
+      LIMIT ? OFFSET ?
       `,
-      { replacements: params }
+      [...params, limit, offset]
     );
-    const [[{ "FOUND_ROWS()": total } = { "FOUND_ROWS()": 0 }]] = await sequelize.query("SELECT FOUND_ROWS()");
 
-    return res.json({ items: rows || [], total: total || 0 });
+    return res.json({ items: itemsRes.rows || [], total });
   } catch (err) {
     console.error("GET /api/medicales", err);
-    return res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    return res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
 /* ------------------------------
    GET /api/medicales/by-passport?passport=XXX
-   -> { items } (même pattern que /pelerins?search=)
+   -> { items }
 ------------------------------ */
 router.get("/by-passport", async (req, res) => {
   try {
     const pass = (req.query.passport || "").toString().trim().toUpperCase();
     if (!pass) return res.json({ items: [] });
 
-    const [rows] = await sequelize.query(
+    const result = await query(
       `
-      SELECT id, pelerin_id, numero_cmah, passeport, nom, prenoms, pouls, carnet_vaccins, groupe_sanguin,
+      SELECT id, pelerin_id, numero_cmah, passeport, nom, prenoms, pouls,
+             carnet_vaccins, groupe_sanguin,
              covid, poids, tension, vulnerabilite, diabete, maladie_cardiaque,
              analyse_psychiatrique, accompagnements, examen_paraclinique, antecedents,
              created_at, updated_at
@@ -102,13 +123,15 @@ router.get("/by-passport", async (req, res) => {
       WHERE UPPER(passeport) = ?
       ORDER BY created_at DESC
       `,
-      { replacements: [pass] }
+      [pass]
     );
 
-    return res.json({ items: rows || [] });
+    return res.json({ items: result.rows || [] });
   } catch (err) {
     console.error("GET /api/medicales/by-passport", err);
-    return res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    return res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -118,9 +141,10 @@ router.get("/by-passport", async (req, res) => {
 ------------------------------ */
 router.get("/:id", async (req, res) => {
   try {
-    const [rows] = await sequelize.query(
+    const result = await query(
       `
-      SELECT id, pelerin_id, numero_cmah, passeport, nom, prenoms, pouls, carnet_vaccins, groupe_sanguin,
+      SELECT id, pelerin_id, numero_cmah, passeport, nom, prenoms, pouls,
+             carnet_vaccins, groupe_sanguin,
              covid, poids, tension, vulnerabilite, diabete, maladie_cardiaque,
              analyse_psychiatrique, accompagnements, examen_paraclinique, antecedents,
              created_at, updated_at
@@ -128,14 +152,16 @@ router.get("/:id", async (req, res) => {
       WHERE id = ?
       LIMIT 1
       `,
-      { replacements: [req.params.id] }
+      [req.params.id]
     );
-    const row = rows?.[0];
+    const row = result.rows?.[0];
     if (!row) return res.status(404).json({ message: "Introuvable" });
     return res.json(row);
   } catch (err) {
     console.error("GET /api/medicales/:id", err);
-    return res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    return res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -149,18 +175,19 @@ router.post("/", async (req, res) => {
     const b = normBody(req.body || {});
     if (!isValidPassport(b.passeport)) {
       return res.status(400).json({
-        message: "Le champ 'passeport' doit contenir 5 à 15 caractères alphanumériques.",
+        message:
+          "Le champ 'passeport' doit contenir 5 à 15 caractères alphanumériques.",
       });
     }
 
     // FK pelerin_id (si existant)
-    const [pelRows] = await sequelize.query(
+    const pelRes = await query(
       "SELECT id FROM pelerins WHERE UPPER(num_passeport) = ? LIMIT 1",
-      { replacements: [b.passeport] }
+      [b.passeport]
     );
-    const pelerinId = pelRows?.[0]?.id ?? null;
+    const pelerinId = pelRes.rows?.[0]?.id ?? null;
 
-    const [result] = await sequelize.query(
+    const insertRes = await query(
       `
       INSERT INTO medicales (
         pelerin_id, numero_cmah, passeport,
@@ -168,28 +195,40 @@ router.post("/", async (req, res) => {
         covid, poids, tension, vulnerabilite, diabete, maladie_cardiaque,
         analyse_psychiatrique, accompagnements, examen_paraclinique, antecedents,
         created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),NOW())
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING *
       `,
-      {
-        replacements: [
-          pelerinId, b.numero_cmah, b.passeport,
-          b.nom, b.prenoms, b.pouls, b.carnet_vaccins, b.groupe_sanguin,
-          b.covid, b.poids, b.tension, b.vulnerabilite, b.diabete, b.maladie_cardiaque,
-          b.analyse_psychiatrique, b.accompagnements, b.examen_paraclinique, b.antecedents,
-        ],
-      }
+      [
+        pelerinId,
+        b.numero_cmah,
+        b.passeport,
+        b.nom,
+        b.prenoms,
+        b.pouls,
+        b.carnet_vaccins,
+        b.groupe_sanguin,
+        b.covid,
+        b.poids,
+        b.tension,
+        b.vulnerabilite,
+        b.diabete,
+        b.maladie_cardiaque,
+        b.analyse_psychiatrique,
+        b.accompagnements,
+        b.examen_paraclinique,
+        b.antecedents,
+      ]
     );
 
-    const insertedId = result?.insertId ?? null;
-    const [rows2] = await sequelize.query("SELECT * FROM medicales WHERE id = ?", {
-      replacements: [insertedId],
-    });
+    const item = insertRes.rows?.[0] || null;
 
-    return res.status(201).json({ ok: true, item: rows2?.[0] || null });
+    return res.status(201).json({ ok: true, item });
   } catch (err) {
     console.error("POST /api/medicales", err);
-    const msg = err?.original?.sqlMessage || err?.message || "Erreur serveur";
-    return res.status(500).json({ ok: false, message: "Erreur serveur", detail: msg });
+    const msg = err?.message || "Erreur serveur";
+    return res
+      .status(500)
+      .json({ ok: false, message: "Erreur serveur", detail: msg });
   }
 });
 
@@ -203,15 +242,31 @@ router.put("/:id", async (req, res) => {
     const b = normBody(req.body || {});
     if (b.passeport && !isValidPassport(b.passeport)) {
       return res.status(400).json({
-        message: "Le champ 'passeport' doit contenir 5 à 15 caractères alphanumériques.",
+        message:
+          "Le champ 'passeport' doit contenir 5 à 15 caractères alphanumériques.",
       });
     }
 
     const fields = [
-      "numero_cmah","passeport","nom","prenoms","pouls","carnet_vaccins","groupe_sanguin",
-      "covid","poids","tension","vulnerabilite","diabete","maladie_cardiaque",
-      "analyse_psychiatrique","accompagnements","examen_paraclinique","antecedents",
+      "numero_cmah",
+      "passeport",
+      "nom",
+      "prenoms",
+      "pouls",
+      "carnet_vaccins",
+      "groupe_sanguin",
+      "covid",
+      "poids",
+      "tension",
+      "vulnerabilite",
+      "diabete",
+      "maladie_cardiaque",
+      "analyse_psychiatrique",
+      "accompagnements",
+      "examen_paraclinique",
+      "antecedents",
     ];
+
     const sets = [];
     const params = [];
     for (const f of fields) {
@@ -220,22 +275,26 @@ router.put("/:id", async (req, res) => {
         params.push(b[f]);
       }
     }
-    sets.push("updated_at = NOW()");
-    const id = req.params.id;
+    sets.push("updated_at = CURRENT_TIMESTAMP");
 
-    await sequelize.query(
+    const id = req.params.id;
+    await query(
       `UPDATE medicales SET ${sets.join(", ")} WHERE id = ?`,
-      { replacements: [...params, id] }
+      [...params, id]
     );
 
-    const [row] = await sequelize.query("SELECT * FROM medicales WHERE id = ? LIMIT 1", {
-      replacements: [id],
-    });
+    const rowRes = await query(
+      "SELECT * FROM medicales WHERE id = ? LIMIT 1",
+      [id]
+    );
+    const item = rowRes.rows?.[0] || null;
 
-    return res.json({ ok: true, item: row?.[0] || null });
+    return res.json({ ok: true, item });
   } catch (err) {
     console.error("PUT /api/medicales/:id", err);
-    return res.status(500).json({ ok: false, message: "Erreur serveur", detail: err.message });
+    return res
+      .status(500)
+      .json({ ok: false, message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -245,13 +304,13 @@ router.put("/:id", async (req, res) => {
 ------------------------------ */
 router.delete("/:id", async (req, res) => {
   try {
-    await sequelize.query("DELETE FROM medicales WHERE id = ?", {
-      replacements: [req.params.id],
-    });
+    await query("DELETE FROM medicales WHERE id = ?", [req.params.id]);
     return res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /api/medicales/:id", err);
-    return res.status(500).json({ ok: false, message: "Erreur serveur", detail: err.message });
+    return res
+      .status(500)
+      .json({ ok: false, message: "Erreur serveur", detail: err.message });
   }
 });
 

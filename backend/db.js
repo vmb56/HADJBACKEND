@@ -1,30 +1,38 @@
 // backend/db.js
-const { Sequelize, QueryTypes } = require("sequelize");
+// ✅ Version Turso (libSQL) pour déploiement sur Vercel
 
-const sequelize = new Sequelize(
-  process.env.DB_NAME,
-  process.env.DB_USER,
-  process.env.DB_PASS,
-  {
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT || 3306,
-    dialect: "mysql",
-    logging: process.env.NODE_ENV === "development" ? console.log : false,
-    define: { timestamps: true }
-  }
-);
+const { createClient } = require("@libsql/client");
 
+// ⚠️ À définir dans ton .env ou dans les variables d'env Vercel
+// TURSO_DATABASE_URL="libsql://..."
+// TURSO_AUTH_TOKEN="...token..."
+
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL,
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
+
+// Simple test de connexion
 async function connectDB() {
-  await sequelize.authenticate();
-  console.log("✅ MySQL connecté");
+  try {
+    await db.execute("SELECT 1");
+    console.log("✅ Turso (libSQL) connecté");
+  } catch (err) {
+    console.error("❌ Erreur de connexion à Turso:", err);
+    throw err;
+  }
 }
 
-// 💡 ajout d'une fonction query universelle
+// Fonction query universelle (équivalent de ton ancien sequelize.query)
 async function query(sql, params = []) {
-  return sequelize.query(sql, {
-    replacements: params,
-    type: QueryTypes.RAW, // ou SELECT, selon ton besoin
+  // libSQL attend un objet { sql, args }
+  const result = await db.execute({
+    sql,
+    args: params,
   });
+
+  // result.rows -> tableau d'objets { col: value }
+  return result;
 }
 
-module.exports = { sequelize, connectDB, query };
+module.exports = { db, connectDB, query };

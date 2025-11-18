@@ -3,28 +3,37 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
-const { sequelize } = require("../db");
+const { query } = require("../db"); // ⬅️ Turso
 
 const router = express.Router();
+
+/* ========= /by-passport ========= */
 router.get("/by-passport", async (req, res) => {
   try {
     const passport = String(req.query.passport || "").trim();
-    if (!passport) return res.status(400).json({ message: "Paramètre 'passport' requis." });
+    if (!passport) {
+      return res
+        .status(400)
+        .json({ message: "Paramètre 'passport' requis." });
+    }
 
-    const [rows] = await sequelize.query(
-      `SELECT id, nom, prenoms, num_passeport
-       FROM pelerins
-       WHERE num_passeport LIKE ?
-       ORDER BY created_at DESC
-       LIMIT 10`,
-      { replacements: [`%${passport}%`] }
+    const result = await query(
+      `
+      SELECT id, nom, prenoms, num_passeport
+      FROM pelerins
+      WHERE num_passeport LIKE ?
+      ORDER BY created_at DESC
+      LIMIT 10
+      `,
+      [`%${passport}%`]
     );
 
-    // Renvoie une liste (le front gère 0/1/n)
-    return res.json(rows);
+    return res.json(result.rows || []);
   } catch (err) {
     console.error("❌ GET /api/pelerins/by-passport:", err);
-    res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -36,26 +45,35 @@ const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname || "");
-    const base = path.basename(file.originalname || "file", ext).replace(/\s+/g, "_");
+    const base = path
+      .basename(file.originalname || "file", ext)
+      .replace(/\s+/g, "_");
     cb(null, `${Date.now()}_${base}${ext}`);
   },
 });
 const upload = multer({ storage });
 
-/* ========= helpers fichiers/sql ========= */
+/* ========= helpers fichiers ========= */
 const toPublicPath = (filename) =>
   filename ? `/uploads/pelerins/${filename}` : null;
 
 function existsSyncSafe(p) {
-  try { return p && fs.existsSync(p); } catch { return false; }
+  try {
+    return p && fs.existsSync(p);
+  } catch {
+    return false;
+  }
 }
 function removeFileIfExists(publicPath) {
   if (!publicPath) return;
   const abs = path.join(__dirname, "..", publicPath.replace(/^\/+/, ""));
   if (existsSyncSafe(abs)) {
-    try { fs.unlinkSync(abs); } catch {}
+    try {
+      fs.unlinkSync(abs);
+    } catch {}
   }
 }
+
 const UPLOAD_FIELDS = upload.fields([
   { name: "photoPelerin", maxCount: 1 },
   { name: "photoPasseport", maxCount: 1 },
@@ -66,7 +84,7 @@ const UPLOAD_FIELDS = upload.fields([
 ============================================================================ */
 router.post("/", UPLOAD_FIELDS, async (req, res) => {
   try {
-    const b = req.body;
+    const b = req.body || {};
 
     const photoPelerinPath = req.files?.photoPelerin?.[0]
       ? toPublicPath(req.files.photoPelerin[0].filename)
@@ -75,13 +93,26 @@ router.post("/", UPLOAD_FIELDS, async (req, res) => {
       ? toPublicPath(req.files.photoPasseport[0].filename)
       : null;
 
-    if (!b.nom || !b.prenoms || !b.dateNaissance || !b.sexe || !b.contact || !b.numPasseport || !b.anneeVoyage) {
-      return res.status(400).json({ message: "Champs obligatoires manquants." });
+    if (
+      !b.nom ||
+      !b.prenoms ||
+      !b.dateNaissance ||
+      !b.sexe ||
+      !b.contact ||
+      !b.numPasseport ||
+      !b.anneeVoyage
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Champs obligatoires manquants." });
     }
 
-    const anneeVoyage = parseInt(b.anneeVoyage, 10) || new Date().getFullYear();
+    const anneeVoyage =
+      parseInt(b.anneeVoyage, 10) || new Date().getFullYear();
     const sexe = b.sexe === "M" ? "M" : b.sexe === "F" ? "F" : null;
-    if (!sexe) return res.status(400).json({ message: "Sexe invalide (M/F)." });
+    if (!sexe) {
+      return res.status(400).json({ message: "Sexe invalide (M/F)." });
+    }
 
     const sql = `
       INSERT INTO pelerins (
@@ -90,9 +121,10 @@ router.post("/", UPLOAD_FIELDS, async (req, res) => {
         adresse, contact, num_passeport,
         offre, voyage, annee_voyage,
         ur_nom, ur_prenoms, ur_contact, ur_residence,
-        created_by_name, created_by_id
+        created_by_name, created_by_id,
+        created_at, updated_at
       )
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `;
     const params = [
       photoPelerinPath,
@@ -116,13 +148,19 @@ router.post("/", UPLOAD_FIELDS, async (req, res) => {
       b.createdById ? Number(b.createdById) : null,
     ];
 
-    const [result] = await sequelize.query(sql, { replacements: params });
-    const insertedId = result?.insertId ?? null;
+    const insertRes = await query(sql, params);
 
-    return res.status(201).json({ id: insertedId, message: "Pèlerin enregistré." });
+    // libSQL ne donne pas insertId, mieux vaut retourner juste un ok
+    // ou récupérer le dernier enregistrement avec ROWID si besoin.
+    // On reste simple : on renvoie juste un message.
+    return res
+      .status(201)
+      .json({ message: "Pèlerin enregistré." });
   } catch (err) {
     console.error("❌ POST /api/pelerins:", err);
-    return res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    return res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -133,14 +171,16 @@ router.get("/", async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
     let where = "";
-    let params = [];
+    const params = [];
+
     if (search) {
       where =
         "WHERE nom LIKE ? OR prenoms LIKE ? OR num_passeport LIKE ? OR contact LIKE ? OR created_by_name LIKE ?";
-      const p = `%${search}%`; params = [p, p, p, p, p];
+      const p = `%${search}%`;
+      params.push(p, p, p, p, p);
     }
 
-    const [rows] = await sequelize.query(
+    const result = await query(
       `
       SELECT
         id,
@@ -155,12 +195,16 @@ router.get("/", async (req, res) => {
       ${where}
       ORDER BY created_at DESC
       `,
-      { replacements: params }
+      params
     );
+
+    const rows = result.rows || [];
     res.json({ items: rows, total: rows.length });
   } catch (err) {
     console.error("❌ GET /api/pelerins:", err);
-    res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -172,7 +216,7 @@ router.get("/:id", async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "id invalide" });
 
-    const [rows] = await sequelize.query(
+    const result = await query(
       `
       SELECT
         id,
@@ -185,22 +229,22 @@ router.get("/:id", async (req, res) => {
         created_at, updated_at
       FROM pelerins WHERE id = ?
       `,
-      { replacements: [id] }
+      [id]
     );
-    const row = rows?.[0];
+
+    const row = result.rows?.[0];
     if (!row) return res.status(404).json({ message: "Introuvable" });
     res.json(row);
   } catch (err) {
     console.error("❌ GET /api/pelerins/:id:", err);
-    res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
 /* ============================================================================
   PUT /api/pelerins/:id — mise à jour (multipart **ou** JSON)
-  - Accepte de nouveaux fichiers photoPelerin/photoPasseport
-  - Met à jour uniquement les champs fournis
-  - Supprime l’ancienne photo si remplacée
 ============================================================================ */
 router.put(
   "/:id",
@@ -213,13 +257,27 @@ router.put(
       const id = Number(req.params.id);
       if (!id) return res.status(400).json({ message: "id invalide" });
 
-      // Détecter si c’est du multipart ou du JSON
+      // Détecter multipart
       const isMultipart =
         req.is("multipart/form-data") ||
-        (req.files && (req.files.photoPelerin || req.files.photoPasseport));
+        (req.files &&
+          (req.files.photoPelerin || req.files.photoPasseport));
 
-      // Récup champs texte (diffèrent selon multipart / json)
-      const b = isMultipart ? req.body : (req.body || {});
+      const b = isMultipart ? req.body : req.body || {};
+
+      // Récupérer l'ancien enregistrement pour éventuellement supprimer les anciens fichiers
+      const currentRes = await query(
+        `
+        SELECT photo_pelerin_path, photo_passeport_path
+        FROM pelerins
+        WHERE id = ?
+        `,
+        [id]
+      );
+      const current = currentRes.rows?.[0] || null;
+      if (!current) {
+        return res.status(404).json({ message: "Introuvable" });
+      }
 
       // Normalisation minimale
       const payload = {
@@ -227,7 +285,7 @@ router.put(
         prenoms: b.prenoms ?? undefined,
         date_naissance: b.date_naissance ?? b.dateNaissance ?? undefined,
         lieu_naissance: b.lieu_naissance ?? b.lieuNaissance ?? undefined,
-        sexe: b.sexe ?? undefined, // doit être "M" ou "F" si fourni
+        sexe: b.sexe ?? undefined,
         adresse: b.adresse ?? undefined,
         contact: b.contact ?? b.contacts ?? undefined,
         num_passeport: b.num_passeport ?? b.numPasseport ?? undefined,
@@ -240,20 +298,22 @@ router.put(
         ur_residence: b.ur_residence ?? b.urgenceResidence ?? undefined,
       };
 
-      // Photos éventuelles en multipart
       let photoPelerinPath = null;
       let photoPasseportPath = null;
 
       if (isMultipart) {
         if (req.files?.photoPelerin?.[0]) {
-          photoPelerinPath = `/uploads/pelerins/${req.files.photoPelerin[0].filename}`;
+          photoPelerinPath = toPublicPath(
+            req.files.photoPelerin[0].filename
+          );
         }
         if (req.files?.photoPasseport?.[0]) {
-          photoPasseportPath = `/uploads/pelerins/${req.files.photoPasseport[0].filename}`;
+          photoPasseportPath = toPublicPath(
+            req.files.photoPasseport[0].filename
+          );
         }
       }
 
-      // Construire la requête UPDATE dynamiquement
       const sets = [];
       const params = [];
 
@@ -262,7 +322,9 @@ router.put(
           if (col === "sexe" && val) {
             const v = String(val).toUpperCase();
             if (v !== "M" && v !== "F") {
-              return res.status(400).json({ message: "Sexe invalide (M/F)." });
+              return res
+                .status(400)
+                .json({ message: "Sexe invalide (M/F)." });
             }
             sets.push(`${col} = ?`);
             params.push(v);
@@ -274,45 +336,61 @@ router.put(
       }
 
       if (photoPelerinPath !== null) {
-        sets.push(`photo_pelerin_path = ?`);
+        sets.push("photo_pelerin_path = ?");
         params.push(photoPelerinPath);
       }
       if (photoPasseportPath !== null) {
-        sets.push(`photo_passeport_path = ?`);
+        sets.push("photo_passeport_path = ?");
         params.push(photoPasseportPath);
       }
 
       if (!sets.length) {
-        return res.status(400).json({ message: "Aucun champ à mettre à jour." });
+        return res
+          .status(400)
+          .json({ message: "Aucun champ à mettre à jour." });
       }
 
+      sets.push("updated_at = CURRENT_TIMESTAMP");
       params.push(id);
 
-      const [result] = await sequelize.query(
-        `UPDATE pelerins SET ${sets.join(", ")}, updated_at = NOW() WHERE id = ?`,
-        { replacements: params }
+      await query(
+        `UPDATE pelerins SET ${sets.join(", ")} WHERE id = ?`,
+        params
       );
 
+      // Nettoyage des anciennes photos si remplacées
+      if (photoPelerinPath && current.photo_pelerin_path) {
+        removeFileIfExists(current.photo_pelerin_path);
+      }
+      if (photoPasseportPath && current.photo_passeport_path) {
+        removeFileIfExists(current.photo_passeport_path);
+      }
+
       // Renvoie la ligne mise à jour
-      const [[row]] = await sequelize.query(
-        `SELECT
-           id, photo_pelerin_path, photo_passeport_path,
-           nom, prenoms, date_naissance, lieu_naissance, sexe,
-           adresse, contact, num_passeport, offre, voyage, annee_voyage,
-           ur_nom, ur_prenoms, ur_contact, ur_residence,
-           created_by_name, created_by_id, created_at, updated_at
-         FROM pelerins WHERE id = ?`,
-        { replacements: [id] }
+      const rowRes = await query(
+        `
+        SELECT
+          id, photo_pelerin_path, photo_passeport_path,
+          nom, prenoms, date_naissance, lieu_naissance, sexe,
+          adresse, contact, num_passeport, offre, voyage, annee_voyage,
+          ur_nom, ur_prenoms, ur_contact, ur_residence,
+          created_by_name, created_by_id, created_at, updated_at
+        FROM pelerins WHERE id = ?
+        `,
+        [id]
       );
+
+      const row = rowRes.rows?.[0] || null;
 
       return res.json({
         message: "Mise à jour effectuée",
-        affectedRows: result?.affectedRows ?? 0,
-        item: row || null,
+        item: row,
       });
     } catch (err) {
       console.error("❌ PUT /api/pelerins/:id:", err);
-      res.status(500).json({ message: "Erreur serveur", detail: err.message });
+      res
+        .status(500)
+        .json({ message: "Erreur serveur", detail: err.message });
     }
   }
 );
@@ -321,39 +399,33 @@ router.put(
   DELETE /api/pelerins/:id — supprime ligne + fichiers
 ============================================================================ */
 router.delete("/:id", async (req, res) => {
-  const t = await sequelize.transaction();
   try {
     const id = Number(req.params.id);
     if (!id) {
-      await t.rollback();
       return res.status(400).json({ message: "id invalide" });
     }
 
-    const [rows] = await sequelize.query(
+    const rowRes = await query(
       `SELECT photo_pelerin_path, photo_passeport_path FROM pelerins WHERE id = ?`,
-      { replacements: [id], transaction: t }
+      [id]
     );
-    const row = rows?.[0];
+    const row = rowRes.rows?.[0];
     if (!row) {
-      await t.rollback();
       return res.status(404).json({ message: "Introuvable" });
     }
 
-    const [result] = await sequelize.query(
-      `DELETE FROM pelerins WHERE id = ?`,
-      { replacements: [id], transaction: t }
-    );
-    await t.commit();
+    await query(`DELETE FROM pelerins WHERE id = ?`, [id]);
 
-    // nettoie les fichiers
+    // nettoyage fichiers
     removeFileIfExists(row.photo_pelerin_path);
     removeFileIfExists(row.photo_passeport_path);
 
-    res.json({ message: "Supprimé", affectedRows: result?.affectedRows ?? 0 });
+    res.json({ message: "Supprimé" });
   } catch (err) {
-    await t.rollback();
     console.error("❌ DELETE /api/pelerins/:id:", err);
-    res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 

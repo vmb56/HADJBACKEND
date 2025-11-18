@@ -1,19 +1,16 @@
 // backend/routes/pelerinspaiement.js
 const express = require("express");
-const path = require("path");
-const { sequelize } = require("../db");
+const { query } = require("../db");
 
 const router = express.Router();
-
-// Helper MySQL quoting
-const Q = (c) => `\`${c}\``;
 
 // Construit URL publique pour les images si on reçoit un chemin relatif
 function toPublicUrl(baseUrl, v) {
   if (!v) return null;
-  if (String(v).startsWith("http://") || String(v).startsWith("https://")) return v;
-  if (String(v).startsWith("/")) return `${baseUrl}${v}`;
-  return `${baseUrl}/${v}`;
+  const s = String(v);
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+  if (s.startsWith("/")) return `${baseUrl}${s}`;
+  return `${baseUrl}/${s}`;
 }
 
 /** Normalise un pèlerin (quel que soit snake/camel) */
@@ -36,17 +33,13 @@ function normPelerin(row = {}, baseUrl = "") {
     row.photo_passeport_path ??
     null;
 
-  // ⚠️ On n’utilise pas prix_offre ici pour éviter d’exploser si la colonne n’existe pas chez toi.
-  // Si plus tard tu ajoutes une colonne `prix_offre`, tu pourras l’inclure dans le SELECT
-  // et la mapper ici: const prixOffre = Number(row.prix_offre ?? 0);
-
   return {
     id: row.id,
     nom: row.nom,
     prenoms: row.prenoms,
     passeport,
     offre: row.offre ?? null,
-    prixOffre: Number(row.prix_offre ?? row.prixOffre ?? 0), // restera 0 si pas en DB
+    prixOffre: Number(row.prix_offre ?? row.prixOffre ?? 0), // 0 si pas en DB
     photoPelerin: toPublicUrl(baseUrl, photoPelerin),
     photoPasseport: toPublicUrl(baseUrl, photoPasseport),
     contact: row.contact ?? null,
@@ -79,10 +72,6 @@ function normPayment(r = {}) {
  *
  * Retour:
  *   { pelerins: [...], payments: [...] }
- *
- * Remarques:
- *  - Pas d’usage de created_at/updated_at pour éviter l’erreur “champ inconnu”.
- *  - On récupère les payments UNIQUEMENT pour les passeports listés (IN (...)).
  */
 router.get("/", async (req, res) => {
   try {
@@ -92,10 +81,9 @@ router.get("/", async (req, res) => {
     if (!Number.isFinite(limit) || limit <= 0) limit = 300;
     if (limit > 1000) limit = 1000;
 
-    // Base URL pour fabriquer des URL absolues d’images
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
-    // — Étape 1: charger les pèlerins
+    // Étape 1 : Pèlerins
     const whereParts = [];
     const params = [];
 
@@ -114,13 +102,13 @@ router.get("/", async (req, res) => {
     }
 
     if (offre && offre.toUpperCase() !== "TOUTES") {
-      whereParts.push(`${Q("offre")} = ?`);
+      whereParts.push("offre = ?");
       params.push(offre);
     }
 
     const whereSql = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
 
-    const [pRows] = await sequelize.query(
+    const pelerinsRes = await query(
       `
       SELECT
         id,
@@ -129,45 +117,47 @@ router.get("/", async (req, res) => {
         adresse, contact, num_passeport,
         offre, voyage, annee_voyage,
         created_by_name, created_by_id
-      FROM ${Q("pelerins")}
+      FROM pelerins
       ${whereSql}
       ORDER BY id DESC
       LIMIT ${limit}
       `,
-      { replacements: params }
+      params
     );
 
-    const pelerins = (pRows || []).map((r) => normPelerin(r, baseUrl));
+    const pelerins = (pelerinsRes.rows || []).map((r) =>
+      normPelerin(r, baseUrl)
+    );
 
-    // Si pas de pèlerins, on renvoie directement (payments vide)
     if (!pelerins.length) {
       return res.json({ pelerins: [], payments: [] });
     }
 
-    // — Étape 2: charger les payments pour ces passeports
+    // Étape 2 : Payments des passeports trouvés
     const passports = pelerins
       .map((p) => p.passeport)
       .filter(Boolean);
 
-    // Filtre IN
     const placeholders = passports.map(() => "?").join(",");
-    const [payRows] = await sequelize.query(
+    const paymentsRes = await query(
       `
       SELECT
         id, ref, passeport, nom, prenoms, mode, montant, totalDu, reduction, date, statut
-      FROM ${Q("payments")}
-      WHERE ${Q("passeport")} IN (${placeholders})
+      FROM payments
+      WHERE passeport IN (${placeholders})
       ORDER BY id DESC
       `,
-      { replacements: passports }
+      passports
     );
 
-    const payments = (payRows || []).map(normPayment);
+    const payments = (paymentsRes.rows || []).map(normPayment);
 
     return res.json({ pelerins, payments });
   } catch (err) {
     console.error("❌ GET /api/pelerinspaiement:", err);
-    res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
@@ -179,11 +169,15 @@ router.get("/", async (req, res) => {
 router.get("/by-passport", async (req, res) => {
   try {
     const passport = String(req.query.passport || "").trim();
-    if (!passport) return res.status(400).json({ message: "Paramètre 'passport' requis." });
+    if (!passport) {
+      return res
+        .status(400)
+        .json({ message: "Paramètre 'passport' requis." });
+    }
 
     const baseUrl = `${req.protocol}://${req.get("host")}`;
 
-    const [[row]] = await sequelize.query(
+    const pelerinsRes = await query(
       `
       SELECT
         id,
@@ -192,32 +186,35 @@ router.get("/by-passport", async (req, res) => {
         adresse, contact, num_passeport,
         offre, voyage, annee_voyage,
         created_by_name, created_by_id
-      FROM ${Q("pelerins")}
-      WHERE ${Q("num_passeport")} = ?
+      FROM pelerins
+      WHERE num_passeport = ?
       LIMIT 1
       `,
-      { replacements: [passport] }
+      [passport]
     );
 
+    const row = pelerinsRes.rows?.[0];
     const pelerin = row ? normPelerin(row, baseUrl) : null;
 
-    const [payRows] = await sequelize.query(
+    const paymentsRes = await query(
       `
       SELECT
         id, ref, passeport, nom, prenoms, mode, montant, totalDu, reduction, date, statut
-      FROM ${Q("payments")}
-      WHERE ${Q("passeport")} = ?
+      FROM payments
+      WHERE passeport = ?
       ORDER BY id DESC
       `,
-      { replacements: [passport] }
+      [passport]
     );
 
-    const payments = (payRows || []).map(normPayment);
+    const payments = (paymentsRes.rows || []).map(normPayment);
 
     res.json({ pelerin, payments });
   } catch (err) {
     console.error("❌ GET /api/pelerinspaiement/by-passport:", err);
-    res.status(500).json({ message: "Erreur serveur", detail: err.message });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur", detail: err.message });
   }
 });
 
