@@ -6,6 +6,7 @@ const path = require("path");
 
 const { connectDB } = require("./db");
 
+// Routes
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/users");
 const pelerinRoutes = require("./routes/pelerins");
@@ -14,6 +15,10 @@ const voyageRoutes = require("./routes/voyages");
 const volsRouter = require("./routes/vols");
 const versementsRouter = require("./routes/versements");
 const offresRouter = require("./routes/offres");
+const chambresRouter = require("./routes/chambres");
+const paiementsRouter = require("./routes/paiements");
+const pelerinspaiementRouter = require("./routes/pelerinspaiement");
+const chatRouter = require("./routes/chat");
 
 const app = express();
 
@@ -21,39 +26,25 @@ const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
-/* ------------ CORS (PROD UNIQUEMENT) ------------ */
-// 👉 On ne garde QUE ce qui est dans CORS_ORIGIN
-// ex sur Render : CORS_ORIGIN="https://bmvt-app-gestion-xxxxx.vercel.app"
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+/* ------------ CORS TRÈS SIMPLE ------------ */
+// ✅ Autorise toutes les origines (ton front Vercel, ton téléphone, etc.)
+app.use(
+  cors({
+    origin: true,        // reflète l'origin qui fait la requête
+    credentials: true,   // si un jour tu utilises des cookies
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
-if (!ALLOWED_ORIGINS.length) {
-  console.warn(
-    "⚠️ Aucun CORS_ORIGIN défini. Le backend refusera toutes les origines de navigateur."
-  );
-}
-
-const CORS_OPTIONS = {
-  origin(origin, callback) {
-    // Requêtes sans origin (curl / Postman / healthcheck Render) -> OK
-    if (!origin) return callback(null, true);
-
-    if (ALLOWED_ORIGINS.includes(origin)) {
-      return callback(null, true);
-    }
-
-    // Sinon, refus
-    return callback(new Error("Origin non autorisé par CORS"), false);
-  },
-  credentials: true,
-  allowedHeaders: ["Content-Type", "Authorization"],
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-};
-
-app.use(cors(CORS_OPTIONS));
-app.options("*", cors(CORS_OPTIONS));
+// OPTIONS préflight
+app.options(
+  "*",
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 
 /* ------------ Parsers ------------ */
 app.use(express.json({ limit: "10mb" }));
@@ -63,21 +54,22 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* ------------ Routes ------------ */
-app.use("/api/vols", volsRouter);
 app.get("/", (_req, res) =>
   res.send("✅ API Backend BMVT en marche avec Turso !")
 );
-app.use("/api/voyages", voyageRoutes);
+
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/pelerins", pelerinRoutes);
 app.use("/api/medicales", medicalesRoutes);
-app.use("/api/chambres", require("./routes/chambres"));
-app.use("/api/paiements", require("./routes/paiements"));
+app.use("/api/voyages", voyageRoutes);
+app.use("/api/vols", volsRouter);
+app.use("/api/chambres", chambresRouter);
+app.use("/api/paiements", paiementsRouter);
 app.use("/api/versements", versementsRouter);
-app.use("/api/pelerinspaiement", require("./routes/pelerinspaiement"));
+app.use("/api/pelerinspaiement", pelerinspaiementRouter);
 app.use("/api/offres", offresRouter);
-app.use("/api/chat", require("./routes/chat"));
+app.use("/api/chat", chatRouter);
 
 /* ------------ 404 ------------ */
 app.use((req, res, _next) => {
@@ -107,12 +99,9 @@ const PORT = process.env.PORT || 4000;
   try {
     await connectDB();
 
-    console.log(
-      `🚀 Serveur backend BMVT démarré sur le port ${PORT}. Origins CORS autorisées :`,
-      ALLOWED_ORIGINS
-    );
-
-    app.listen(PORT, () => {});
+    app.listen(PORT, () => {
+      console.log(`🚀 Serveur backend BMVT démarré sur le port ${PORT}`);
+    });
   } catch (e) {
     console.error("❌ Erreur au démarrage:", e);
     process.exit(1);
