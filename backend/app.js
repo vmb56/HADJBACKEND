@@ -27,9 +27,13 @@ app.set("trust proxy", 1);
 // 🔐 CORS
 const ORIGINS =
   (process.env.CORS_ORIGIN &&
-    process.env.CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean)) || [
+    process.env.CORS_ORIGIN.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)) || [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    // 🔹 front Vercel (prod)
+    "https://bmvt-app-gestion-nuk8ex2x0-valybamba56-gmailcoms-projects.vercel.app",
   ];
 
 const CORS_OPTIONS = {
