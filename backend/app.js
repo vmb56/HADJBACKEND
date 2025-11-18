@@ -6,9 +6,6 @@ const path = require("path");
 
 const { connectDB } = require("./db");
 
-// ⛔ Sequelize / syncModels désactivé, car on passe à Turso
-// const { syncModels } = require("./models");
-
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/users");
 const pelerinRoutes = require("./routes/pelerins");
@@ -24,33 +21,26 @@ const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
-/* ------------ CORS ------------ */
-// Origins “fixes” (localhost + quelques URLs Vercel connues)
-const STATIC_ORIGINS =
-  (process.env.CORS_ORIGIN &&
-    process.env.CORS_ORIGIN.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)) || [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    // anciens / nouveaux déploiements Vercel déjà connus
-    "https://bmvt-app-gestion-e36z8zg25-valybamba56-gmailcoms-projects.vercel.app",
-  ];
+/* ------------ CORS (PROD UNIQUEMENT) ------------ */
+// 👉 On ne garde QUE ce qui est dans CORS_ORIGIN
+// ex sur Render : CORS_ORIGIN="https://bmvt-app-gestion-xxxxx.vercel.app"
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-// Options CORS avec fonction dynamique
+if (!ALLOWED_ORIGINS.length) {
+  console.warn(
+    "⚠️ Aucun CORS_ORIGIN défini. Le backend refusera toutes les origines de navigateur."
+  );
+}
+
 const CORS_OPTIONS = {
   origin(origin, callback) {
-    // Requêtes sans origin (ex: curl, Postman) -> OK
+    // Requêtes sans origin (curl / Postman / healthcheck Render) -> OK
     if (!origin) return callback(null, true);
 
-    // Autoriser les origins listés
-    if (STATIC_ORIGINS.includes(origin)) {
-      return callback(null, true);
-    }
-
-    // Autoriser tous les bmvt-app-gestion-*.vercel.app
-    const vercelPattern = /^https:\/\/bmvt-app-gestion-.*\.vercel\.app$/;
-    if (vercelPattern.test(origin)) {
+    if (ALLOWED_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
 
@@ -74,7 +64,9 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /* ------------ Routes ------------ */
 app.use("/api/vols", volsRouter);
-app.get("/", (_req, res) => res.send("✅ API Backend BMVT en marche avec Turso !"));
+app.get("/", (_req, res) =>
+  res.send("✅ API Backend BMVT en marche avec Turso !")
+);
 app.use("/api/voyages", voyageRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
@@ -102,7 +94,9 @@ app.use((err, _req, res, _next) => {
   res.status(code).json({
     message: err.message || "Erreur serveur",
     detail:
-      err?.stack && process.env.NODE_ENV !== "production" ? err.stack : undefined,
+      err?.stack && process.env.NODE_ENV !== "production"
+        ? err.stack
+        : undefined,
   });
 });
 
@@ -113,15 +107,9 @@ const PORT = process.env.PORT || 4000;
   try {
     await connectDB();
 
-    // ❌ plus de syncModels ici
-    // if (typeof syncModels === "function") {
-    //   await syncModels();
-    // }
-
     console.log(
-      `🚀 Serveur backend BMVT démarré sur le port ${PORT}. Origins CORS :`,
-      STATIC_ORIGINS.join(" , "),
-      "+ pattern bmvt-app-gestion-*.vercel.app"
+      `🚀 Serveur backend BMVT démarré sur le port ${PORT}. Origins CORS autorisées :`,
+      ALLOWED_ORIGINS
     );
 
     app.listen(PORT, () => {});
